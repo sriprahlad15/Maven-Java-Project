@@ -1,95 +1,69 @@
 def mvnHome
-def remote = [:]
-    	remote.name = 'deploy'
-    	remote.host = '192.168.33.2'
-    	remote.user = 'root'
-    	remote.password = 'vagrant'
-    	remote.allowAnyHosts = true
 pipeline {
-    
-	agent none
-	
-	stages {
-		//def mvnHome
-		stage ('Preparation') {
-		    agent {
-		        label 'master'
-		    }
-		    steps {
-			    git 'https://github.com/venkat09docs/Maven-Java-Project.git'
-			    stash 'Source'
-			    script{
-			        mvnHome = tool 'Maven3.6'
+	agent {
+		 label "slave1"
+	}      	
+   stages {
+       stage('Code from GitHub') {
+	        steps {
+			    git 'https://github.com/ravikiran529/Maven-Java-Project.git'
+				script{
+			        mvnHome = tool 'maven3.6'
 			    }
-		    }
-		}
-		stage ('build'){
-			agent {
-				label "master"
-            }
-			steps {
-				sh "'${mvnHome}/bin/mvn' clean package"			
+			}
+	   }
+       stage('Code-Analysis') {
+	        steps {
+			    sh "'${mvnHome}/bin/mvn' clean cobertura:cobertura"
 			}
 			post {
-                always {
-                    junit 'target/surefire-reports/*.xml'
-                    archiveArtifacts '**/*.war'
-                    fingerprint '**/*.war'
+			    success {
+				    cobertura autoUpdateHealth: false, autoUpdateStability: false, coberturaReportFile: 'target/site/cobertura/coverage.xml', conditionalCoverageTargets: '70, 0, 0', failUnhealthy: false, failUnstable: false, lineCoverageTargets: '80, 0, 0', maxNumberOfBuilds: 0, methodCoverageTargets: '80, 0, 0', onlyStable: false, sourceEncoding: 'ASCII', zoomCoverageChart: false 
+				}
+			}
+	   }
+	   stage('Build') {
+	        steps {
+			    sh "'${mvnHome}/bin/mvn' clean package"
+			}
+			post {
+			    always{
+			        junit 'target/surefire-reports/*.xml'
+					archiveArtifacts artifacts: '**/*.war', onlyIfSuccessful: true
+        	    }
+			}	
+	   }
+	   stage('Upload Artifact') {
+	        steps {
+			    sh "'${mvnHome}/bin/mvn' clean deploy"			
+	        }
+	   }		   
+	   stage('Deploy') {
+	        steps {
+			    deploy adapters: [tomcat8(credentialsId: 'tomcat2', path: '', url: 'http://192.168.35.15:8080')], contextPath: 'my_app', onFailure: false, war: '**/*.war'
+			}
+	   }
+	   stage('Integration-testing') {
+	        steps {
+			    sh "'${mvnHome}/bin/mvn' clean verify" 
+			}
+	   }
+	   stage('Production') {
+	        steps {
+			    timeout(time: 2, unit: 'HOURS') {
+			    input message: 'Deploy to Production?', submitter: 'Administrator'
+			    }
+			
+		            sshPublisher(publishers: [sshPublisherDesc(configName: 'ansible-controller', transfers: [sshTransfer(cleanRemote: false, excludes: '', execCommand: '''cd workspace/ansible-files
+git pull origin master
+ansible-playbook -b ansibleRoles/tomcat.yml''', execTimeout: 120000, flatten: false, makeEmptyDirs: false, noDefaultExcludes: false, patternSeparator: '[, ]+', remoteDirectory: 'workspace/ansible-files/ansibleRoles/tomcat/files', remoteDirectorySDF: false, removePrefix: '', sourceFiles: '**/my_app.war')], usePromotionTimestamp: false, useWorkspaceInPromotion: false, verbose: false)])
                 }
-            }
-		}
-		stage('Deploy-to-Stage') {
-		     agent {
-		        label 'master'
-		    }
-		    //SSH-Steps-Plugin should be installed
-		    //SCP-Publisher Plugin (Optional)
-		    steps {
-		        //sshScript remote: remote, script: "abc.sh"  	
-			sshPut remote: remote, from: 'target/java-maven-1.0.war', into: '/root/tomcat8/webapps'		        
-		    }
-    	}
-    	stage ('Integration-Test') {
-			agent {
-				label "master"
-            }
-			steps {
-				parallel (
-					'integration': { 
-						unstash 'Source'
-						sh "'${mvnHome}/bin/mvn' clean verify"
-      							  						
-					}, 'quality': {
-						unstash 'Source'
-						sh "'${mvnHome}/bin/mvn' clean test"
-					}
-				)
-			}
-		}
-		stage ('approve') {
-			agent {
-				label "master"
-            }
-			steps {
-				timeout(time: 7, unit: 'DAYS') {
-					input message: 'Do you want to deploy?', submitter: 'admin'
-				}
-			}
-		}
-		stage ('Prod-Deploy') {
-			agent {
-				label "master"
-            }
-			steps {
-				unstash 'Source'
-				sh "'${mvnHome}/bin/mvn' clean package"				
-			}
-			post {
-				always {
-					archiveArtifacts '**/*.war'
-				}
-			}
-		}
-    	
-	}	
+                post {
+                  success {
+                             echo "Application has been deployed to production successfully!"
+                  }
+               }	   
+        }   
+   }
 }
+
